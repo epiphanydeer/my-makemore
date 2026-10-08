@@ -10,7 +10,7 @@
 - [一、微观引擎篇：自动求导与计算图的本质 (Micrograd)](#一微观引擎篇自动求导与计算图的本质-micrograd)
   - [1. 节点拓扑：为什么是 DAG 而不是二叉树？](#1-节点拓扑为什么是-dag-而不是二叉树)
   - [2. 运算符重载与魔术方法](#2-运算符重载与魔术方法)
-  - [3. 函数闭包与动态挂载：\_backward 到底在执行什么？](#3-函数闭包与动态挂载_backward-到底在执行什么)
+  - [3. 函数闭包与动态挂载：`_backward` 到底在执行什么？](#3-函数闭包与动态挂载_backward-到底在执行什么)
   - [4. 局部导数 vs 全局导数：梯度的传递源头](#4-局部导数-vs-全局导数梯度的传递源头)
   - [5. 核心考点：为什么梯度必须累加 (+=) 而不是赋值 (=)？](#5-核心考点为什么梯度必须累加--而不是赋值-)
   - [6. 拓扑排序 (Topological Sort) 的调度必要性](#6-拓扑排序-topological-sort-的调度必要性)
@@ -59,7 +59,7 @@
 ### 1. 节点拓扑：为什么是 DAG 而不是二叉树？
 
 - 二叉树结构中，任意子节点仅能拥有一个唯一的父节点。
-- 深度学习计算图中，一个变量可以同时作为多个下游计算路径的输入（例如 $y = x \cdot x + x$ 中，$x$ 同时参与了乘法与加法）。
+- 深度学习计算图中，一个变量可以同时作为多个下游计算路径的输入（例如 $y = x \cdot x + x$ 中，x 同时参与了乘法与加法）。
 - 计算图的真实数据结构是 **DAG（Directed Acyclic Graph，有向无环图）**。
 - 代码中使用 `self._prev = set(_children)`：
   - 利用 `set` 集合自动去重（即使变量被复用多次，也只保留唯一的上游引用）；
@@ -73,7 +73,7 @@
   - 运算符右侧的操作数作为形参传入（`other`）。
 - **`__repr__` 规范化打印**：如果不重写 `__repr__`，打印实例仅能得到对象的内存物理地址；重写后输出类似 `Value(data=2.0, grad=0.0)`，极大降低调试排错成本。
 
-### 3. 函数闭包与动态挂载：\_backward 到底在执行什么？
+### 3. 函数闭包与动态挂载：`_backward` 到底在执行什么？
 
 在类的初始化中定义了 `self._backward = lambda: None`，为何最终调用 `loss.backward()` 却能层层传导梯度？
 
@@ -98,7 +98,9 @@
 - **全局导数（Global Gradient）**：整个网络的最终标量损失 $L$ 关于当前节点输出的偏导数 $\frac{\partial L}{\partial out}$（对应代码中的 `out.grad`）。
 - **链式法则传递**：
 
-$\frac{\partial L}{\partial a} = \frac{\partial L}{\partial out} \cdot \frac{\partial out}{\partial a}$
+$$
+\frac{\partial L}{\partial a} = \frac{\partial L}{\partial out} \cdot \frac{\partial out}{\partial a}
+$$
 
 - **全局梯度的源头点火**：在调用 `loss.backward()` 时，启动代码必须显式设定：
 
@@ -130,7 +132,9 @@ self.grad = 1.0  # 最终标量对自身的偏导数恒等于 1.0 (dL/dL = 1)
 
 - **Neuron(nin)**：配置 `nin` 个可学习权重 `w` 与 1 个偏置 `b`。前向执行线性组合后接入非线性激活：
 
-$\text{out} = \text{ReLU}\left(\sum_{i=1}^{nin} w_i x_i + b\right)$
+$$
+\text{out} = \text{ReLU}\left(\sum_{i=1}^{nin} w_i x_i + b\right)
+$$
 
 - **Layer(nin, nout)**：单层包含 `nout` 个独立的神经元。相同的输入向量 $x$ 分发给所有神经元并行打分，组装成长度为 `nout` 的输出特征列表。
 - **MLP(nin, nouts)**：流水线级联组织。通过列表拼接构建通道序列 `sz = [nin] + nouts`，相邻通道两两配对生成层级实例，实现前一层的输出透明输入下一层。
@@ -277,10 +281,16 @@ W.data += -lr * W.grad ◄── W.grad 累加反传完毕 ◄── loss.backwa
 
 ### 1. 单层线性网络的设计目的与数学等价性
 
-- **设计意图**：输入为 27 维字符标识，输出目标为 27 维下一个字符分类，最简网络结构即为一个无偏置的单一线性权重矩阵 $W \in \mathbb{R}^{27 \times 27}$。
+- **设计意图**：输入为 27 维字符标识，输出目标为 27 维下一个字符分类，最简网络结构即为一个无偏置的单一线性权重矩阵：
+
+$$
+W \in \mathbb{R}^{27 \times 27}
+$$
 - **前向传播公式**：
 
-$\text{Logits} = X_{\text{one\_hot}} \ @ \ W$
+$$
+\text{Logits} = X_{\text{one-hot}} @ W
+$$
 
 - **数学等价性**：该单层模型经梯度下降收敛后，其权重参数矩阵 $W$ 经过 Softmax 变换后，在数值上将无限逼近纯统计学方法统计出的真实联合概率矩阵 $P$。这证明了神经网络能够自主拟合出数据底层的先验分布。
 
@@ -306,8 +316,17 @@ loss = -probs[torch.arange(N), ys].log().mean()
 
 - **高级整数索引运作方式**：`torch.arange(N)` 传入行序列，真实标签 `ys` 传入列序列。PyTorch 沿两轴坐标配对，精准提取出网络为真实标签所分配的预测概率值 $P(y_i)$。
 - **负对数似然（NLL Loss）逻辑**：
-  - 最大化真实样本的联合出现概率（最大似然估计）：$\prod P(y_i)$；
-  - 取自然对数将乘积转换为加法，避免浮点数下溢：$\sum \log P(y_i)$；
+  - 最大化真实样本的联合出现概率（最大似然估计）：
+
+    $$
+    \prod_i P(y_i)
+    $$
+
+  - 取自然对数将乘积转换为加法，避免浮点数下溢：
+
+    $$
+    \sum_i \log P(y_i)
+    $$
   - 加上负号并将求和转为求平均（`.mean()`），适配梯度下降算法最小化损失的目标。
 
 ### 5. 参数更新中的 .data 历史演进与现代规范
@@ -367,7 +386,9 @@ optimizer.step()
 - **数值溢出隐患**：若 Logit 数值超过极限（如大于 88.7），`exp` 操作会发生数值上溢（Overflow）输出 `inf`；若极低则发生下溢（Underflow）导致 `log(0)` 输出 `NaN`，引发训练中断。
 - **底层融合算子**：直接使用 `torch.nn.functional.cross_entropy`。该算子在底层 CUDA 核心内实现 Log-Sum-Exp 优化：
 
-$\log\left(\sum_{j} e^{z_j}\right) = c + \log\left(\sum_{j} e^{z_j - c}\right), \quad \text{其中 } c = \max(z)$
+$$
+\log\left(\sum_{j} e^{z_j}\right) = c + \log\left(\sum_{j} e^{z_j - c}\right), \quad \text{其中 } c = \max(z)
+$$
 
 通过预先减去行内最大值使指数项维持在数值稳定区间，同时减少全局显存（HBM）的访存读写次数。
 
@@ -417,7 +438,9 @@ inputs_embeds = torch.cat([visual_embeds, text_embeds], dim=1)
 - 模型计算该转移概率 $P = 0$；
 - 负对数似然损失直接爆炸：
 
-$\text{Loss} = -\log(P) = -\log(0) \to +\infty$
+$$
+\text{Loss} = -\log(P) = -\log(0) \to +\infty
+$$
 
 **补丁：拉普拉斯平滑（Laplace Smoothing）**——给每个格子加一个虚拟计数值（伪计数）：
 
@@ -434,7 +457,9 @@ P /= P.sum(1, keepdim=True)
 
 神经网络没有频数矩阵，只有一个权重矩阵 $W$，用 $W$ 的大小来表达「自信程度」：
 
-$\text{logits} = x @ W, \qquad \text{probs} = \text{softmax}(\text{logits})$
+$$
+\text{logits} = x @ W, \qquad \text{probs} = \text{softmax}(\text{logits})
+$$
 
 - **$W$ 全为 0**：所有 logits 为 `[0, 0, ..., 0]` → $e^0 = 1$ → 概率全为 $\frac{1}{27} \approx 0.037$，即**绝对均匀分布**（极致平滑，谁也不偏向）。
 - **$W$ 出现极大值**（如 `10.0`、`-20.0`）：Softmax 极度放大差距 → 某字符概率 `0.9999`，其余趋近 `0` → 极端自信，真实答案一旦偏离 Loss 暴涨。
@@ -449,7 +474,9 @@ loss = -probs[torch.arange(num), ys].log().mean()
 loss = loss + 0.01 * (W**2).mean()
 ```
 
-$\text{Total Loss} = \text{Data Loss} + \lambda \cdot \text{mean}(W^2)$
+$$
+\text{Total Loss} = \text{Data Loss} + \lambda \cdot \text{mean}(W^2)
+$$
 
 - 前半部分（Data Loss）：要求模型把训练集预测准；
 - 后半部分（$\lambda \cdot \text{mean}(W^2)$）：**弹簧惩罚项**——$W$ 变大则 $W^2$ 急剧增大，迫使优化器在「预测准」与「把 $W$ 往 0 压」之间权衡。

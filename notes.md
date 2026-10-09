@@ -33,7 +33,26 @@
   - [1. 算子融合与数值稳定：Log-Sum-Exp Trick](#1-算子融合与数值稳定log-sum-exp-trick)
   - [2. 多模态对齐投影层 (Multimodal Projector)](#2-多模态对齐投影层-multimodal-projector)
   - [3. 图文跨模态特征拼接与并行自注意力](#3-图文跨模态特征拼接与并行自注意力)
-- 六、[正则化：统计学平滑 ↔ L2 权重衰减的对齐](#正则化统计学平滑L2权重衰减的对齐)
+- [六、正则化：统计学平滑 ↔ L2 权重衰减的对齐](#六正则化统计学平滑--l2-权重衰减的对齐)
+  - [1. 统计学世界的危机：0 概率 → 无穷大损失](#1-统计学世界的危机0-概率--无穷大损失)
+  - [2. 神经网络世界的对应物：L2 正则化](#2-神经网络世界的对应物l2-正则化权重衰减)
+  - [3. 两者的对应关系](#3-顿悟两者的神圣对应)
+  - [4. 工业界映射：AdamW 与标签平滑](#4-工业界映射大厂面试高频)
+- [七、数据批处理：Mini-batch 机制与随机梯度下降 (SGD)](#mini-batch-sgd)
+  - [1. 为什么不使用全量 Batch Gradient Descent？](#batch-gradient-descent)
+  - [2. Mini-batch：无偏梯度估计与梯度噪声](#mini-batch-principle)
+- [八、优化器生命线：学习率搜索与调度](#learning-rate)
+  - [1. 学习率的作用与失效模式](#lr-failure-modes)
+  - [2. 对数尺度的 LR Range Test](#lr-range-test)
+  - [3. 学习率衰减](#lr-decay)
+- [九、MLP 字符语言模型：从上下文到交叉熵](#mlp-language-model)
+  - [1. 前向数据流与核心公式](#mlp-forward)
+  - [2. 张量形状索引](#mlp-shapes)
+  - [3. 为什么使用 `F.cross_entropy`](#cross-entropy)
+- [十、数据集划分与泛化诊断](#data-split)
+  - [1. 训练、验证与测试集](#train-validation-test)
+  - [2. 欠拟合、良好拟合与过拟合](#fit-diagnosis)
+- [十一、从 MLP 到多模态大模型的训练映射](#mllm-training-map)
 
 ---
 
@@ -94,7 +113,13 @@
 
 ### 4. 局部导数 vs 全局导数：梯度的传递源头
 
-- **局部导数（Local Gradient）**：当前算子直接输出关于直接输入的偏导数。例如在乘法算子中， $\frac{\partial out}{\partial a} = b.data$ （对应代码里的 `other.data`）。
+- **局部导数（Local Gradient）**：当前算子直接输出关于直接输入的偏导数。例如在乘法算子中：
+
+  $$
+  \frac{\partial out}{\partial a} = b.data
+  $$
+
+  （对应代码里的 `other.data`）。
 - **全局导数（Global Gradient）**：整个网络的最终标量损失 $L$ 关于当前节点输出的偏导数 $\frac{\partial L}{\partial out}$（对应代码中的 `out.grad`）。
 - **链式法则传递**：
 
@@ -114,7 +139,11 @@ self.grad = 1.0  # 最终标量对自身的偏导数恒等于 1.0 (dL/dL = 1)
 
 若在代码中写为 `self.grad = ...`，在遇到变量复用（如多元函数 $y = x + x$）时：
 
-- **数学理论推导**： $\frac{dy}{dx} = 1 + 1 = 2$；
+- **数学理论推导**：
+
+  $$
+  \frac{dy}{dx} = 1 + 1 = 2
+  $$
 - **若采用赋值操作 `=`**，后一条反向路径的计算结果将直接覆盖前一条路径的计算结果，最终错误得出 $\frac{dy}{dx} = 1$；
 - **根据多元微积分链式法则**，自变量对因变量的总贡献必须是所有汇聚路径的偏导数代数累加和；
 - **PyTorch 映射考点**：这也解释了为何在 PyTorch 训练循环中，每次迭代前必须调用 `optimizer.zero_grad()`。PyTorch 底层张量计算同样遵循累加机制，若不清空，历史批次的梯度将残留在内存中污染当前轮次的参数更新。
@@ -516,3 +545,238 @@ loss = nn.CrossEntropyLoss(label_smoothing=0.1)
 - `label_smoothing=0.1` 把标签平滑成 `[0.05, 0.9, 0.05]`，阻止极端 Logits，让注意力分布更平滑，提升鲁棒性。
 
 **记忆锚点**：`loss = loss + 0.01 * (W**2).mean()` 就是一根给权重松绑 / 拉紧的弹簧。
+
+---
+
+<a id="mini-batch-sgd"></a>
+
+## 七、数据批处理：Mini-batch 机制与随机梯度下降 (SGD)
+
+滑动窗口将一个词拆成多个“上下文 → 下一个字符”样本。以 `block_size = 3` 为例，训练集很容易扩展到数十万条；此时应以小批次而不是全量数据驱动每次参数更新。
+
+<a id="batch-gradient-descent"></a>
+
+### 1. 为什么不在全量数据集上做 Batch Gradient Descent (BGD)？
+
+设训练集有 $N$ 个样本，单样本损失为 $\ell_i(\theta)$。全量目标和全量梯度为：
+
+$$
+L(\theta)=\frac{1}{N}\sum_{i=1}^{N}\ell_i(\theta),
+\qquad
+\nabla_\theta L(\theta)=\frac{1}{N}\sum_{i=1}^{N}\nabla_\theta\ell_i(\theta).
+$$
+
+- **吞吐与显存压力**：一次前向、反向传播必须保留全部样本的中间激活；样本、隐藏层或词表变大时，这会迅速成为内存瓶颈。
+- **更新频率低**：必须处理完整个训练集后才走一步，单位时间内的参数更新次数很少。
+- **缺少有益扰动**：全量梯度十分平滑；在复杂非凸损失面中，适量随机性常有助于离开鞍点或狭窄的次优区域。
+
+<a id="mini-batch-principle"></a>
+
+### 2. Mini-batch 的底层原理：用「方差」换取「速度」与「泛化」
+
+每一步随机抽取大小为 $B$ 的批次 $\mathcal{B}$，用批次均值近似全量梯度：
+
+$$
+g_{\mathcal{B}}(\theta)=\frac{1}{B}\sum_{i\in\mathcal{B}}\nabla_\theta\ell_i(\theta),
+\qquad
+\theta_{t+1}=\theta_t-\eta\,g_{\mathcal{B}}(\theta_t).
+$$
+
+若样本是均匀随机抽取的，则该估计满足 $\mathbb{E}[g_{\mathcal{B}}]=\nabla_\theta L$：它在期望上是全量梯度的无偏估计。批次越小，方差通常越大；代价是更新方向更“吵”，收益是单步更轻、更新更多，并可能带来一定隐式正则化效果。常见的 $B=32,64,128$ 也较适合 GPU 的矩阵并行吞吐，但最终应由显存和实际吞吐测试决定。
+
+```python
+# Xtr: (N, block_size), Ytr: (N,)
+batch_size = 32
+ix = torch.randint(0, Xtr.shape[0], (batch_size,), device=Xtr.device)
+Xb, Yb = Xtr[ix], Ytr[ix]  # Xb: (32, block_size), Yb: (32,)
+```
+
+> `torch.randint` 是有放回抽样；这对 SGD 很常见。若需要一个 epoch 内不重复地遍历样本，应使用 `torch.randperm` 再分批切片。
+
+---
+
+<a id="learning-rate"></a>
+
+## 八、优化器生命线：学习率搜索与调度
+
+<a id="lr-failure-modes"></a>
+
+### 1. 学习率的作用与失效模式
+
+学习率 $\eta$ 决定每次沿负梯度移动的步幅。它不是“越大越快”：
+
+$$
+\theta_{t+1}=\theta_t-\eta\nabla_\theta L(\theta_t).
+$$
+
+- $η$ **过大**：不断跨过谷底，损失剧烈震荡，甚至数值溢出为 `inf` / `nan`。
+- $η$ **过小**：方向可能正确，但步长过短，训练进展缓慢、算力浪费严重。
+
+<a id="lr-range-test"></a>
+
+### 2. 对数尺度的 LR Range Test
+
+学习率应按数量级搜索，而不是在线性坐标中均匀搜索。下面在 $10^{-3}$ 至 $10^0$ 间产生等间距的对数采样点：
+
+```python
+lre = torch.linspace(-3, 0, 1000)
+lrs = 10.0 ** lre  # 0.001 ... 1.0；相邻候选值的比值恒定
+```
+
+Range Test 会逐步增大学习率并记录损失。选择标准是**损失稳定下降且下降较陡的区段**，通常应比损失最低点（往往已接近不稳定边界）再小一个量级左右。测试时必须在每步反传前清空梯度：
+
+```python
+lri, lossi = [], []
+for i, lr in enumerate(lrs):
+    ix = torch.randint(0, Xtr.shape[0], (32,), device=Xtr.device)
+    logits = model(Xtr[ix])
+    loss = F.cross_entropy(logits, Ytr[ix])
+
+    for p in model.parameters():
+        p.grad = None
+    loss.backward()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(p.grad, alpha=-lr.item())
+
+    lri.append(lre[i].item())
+    lossi.append(loss.item())
+```
+
+实际使用中，Range Test 的模型参数不应直接作为正式训练的起点；完成探索后应恢复初始权重，或重新初始化模型。
+
+<a id="lr-decay"></a>
+
+### 3. 学习率衰减（LR Decay）
+
+训练初期参数离较优区域较远，较大的学习率利于快速搜索；后期则需要较小步长精细收敛。可采用分段衰减、余弦退火或带 warmup 的调度器。例如分段衰减：
+
+$$
+\eta_t=
+\begin{cases}
+0.1, & t < 100\,000,\\
+0.01, & t \ge 100\,000.
+\end{cases}
+$$
+
+降低学习率后，损失通常会进入新的、更低的平台；这不是“突然学会了新知识”，而是较小步长让参数能在原先震荡的谷底附近继续收敛。
+
+---
+
+<a id="mlp-language-model"></a>
+
+## 九、MLP 字符语言模型：从上下文到交叉熵
+
+这是固定窗口语言模型：使用前 $K$ 个字符预测下一个字符。令词表大小为 $V$、嵌入维度为 $D$、隐藏层维度为 $H$，其中本例 $K=3, D=2, H=100, V=27$。
+
+<a id="mlp-forward"></a>
+
+### 1. 前向数据流与核心公式
+
+$$
+\begin{aligned}
+E &= C[X] &&\in \mathbb{R}^{B\times K\times D},\\
+\tilde E &= \operatorname{reshape}(E) &&\in \mathbb{R}^{B\times(KD)},\\
+H &= \tanh(\tilde E W_1+b_1) &&\in \mathbb{R}^{B\times H},\\
+Z &= HW_2+b_2 &&\in \mathbb{R}^{B\times V},\\
+\mathcal L &= \operatorname{CrossEntropy}(Z,Y).&&
+\end{aligned}
+$$
+
+其中 $Z$ 是未归一化分数（logits），而非概率；`CrossEntropy` 会在内部完成稳定的 `log_softmax` 与负对数似然计算。
+
+<a id="mlp-shapes"></a>
+
+### 2. 张量形状索引
+
+| 阶段 | 张量 | 形状 | 含义 |
+| --- | --- | --- | --- |
+| 输入批次 | `Xb` | `(B, 3)` | 每个样本有 3 个上下文字符索引 |
+| 嵌入表 | `C` | `(27, 2)` | 每个词表项对应一个 2 维向量 |
+| 查表结果 | `emb = C[Xb]` | `(B, 3, 2)` | 3 个字符各自的嵌入 |
+| 展平特征 | `emb.view(B, 6)` | `(B, 6)` | 拼接上下文嵌入 |
+| 隐藏层 | `h` | `(B, 100)` | `tanh` 后的非线性特征 |
+| logits | `logits` | `(B, 27)` | 27 个候选下一个字符的分数 |
+
+<a id="cross-entropy"></a>
+
+### 3. 为什么使用 `F.cross_entropy`
+
+手写 Softmax 与 NLL 的数学形式为：
+
+$$
+p_{i,j}=\frac{e^{z_{i,j}}}{\sum_{k=1}^{V}e^{z_{i,k}}},
+\qquad
+\mathcal L=-\frac{1}{B}\sum_{i=1}^{B}\log p_{i,y_i}.
+$$
+
+生产代码应使用融合算子，而不是直接执行 `logits.exp()`：
+
+```python
+loss = F.cross_entropy(logits, Yb)
+```
+
+其核心稳定变换为：
+
+$$
+\log\sum_j e^{z_j}=c+\log\sum_j e^{z_j-c},
+\qquad c=\max_j z_j.
+$$
+
+减去行最大值不会改变 Softmax 概率，却能避免 `exp(100)` 一类上溢；融合实现也会减少中间张量和显存读写。对平均交叉熵，单个 logit 的梯度为 $\frac{\partial\mathcal L}{\partial z_{i,j}}=(p_{i,j}-\mathbb{1}[j=y_i])/B$。
+
+---
+
+<a id="data-split"></a>
+
+## 十、数据集划分与泛化诊断
+
+<a id="train-validation-test"></a>
+
+### 1. 训练、验证与测试集
+
+常用起点是 80% / 10% / 10%（实际比例应随数据规模调整）：
+
+- **训练集（train）**：参与反向传播，用于更新 $C,W,b$ 等参数。
+- **验证集（validation / dev）**：不更新参数；用于比较架构、学习率、隐藏层维度、正则化等超参数。
+- **测试集（test）**：在方案完全确定前保持封存，只用于最终一次泛化评估。
+
+测试集不是“第三个验证集”。根据测试分数反复改超参数，会将测试集信息泄漏进训练决策，使最终分数偏乐观。
+
+<a id="fit-diagnosis"></a>
+
+### 2. 欠拟合、良好拟合与过拟合
+
+| 现象 | Train loss | Validation loss | 常见判断 |
+| --- | --- | --- | --- |
+| 欠拟合 | 高 | 高且接近训练集 | 容量不足、特征不足或训练不够 |
+| 良好拟合 | 持续下降 | 略高于训练集且同步改善 | 泛化状态健康 |
+| 过拟合 | 持续下降 | 停滞或回升 | 开始记忆训练样本中的噪声 |
+
+出现过拟合时，可优先考虑更多数据、数据增强、权重衰减、早停或降低模型容量；不能用测试集曲线来选择这些策略。
+
+---
+
+<a id="mllm-training-map"></a>
+
+## 十一、从 MLP 到多模态大模型的训练映射
+
+本章 MLP 与现代 MLLM 的规模相差巨大，但训练闭环一致：输入特征经表示层进入网络，输出 logits，经交叉熵反传，再由优化器更新参数。
+
+```text
+图像 ──> ViT / Vision Encoder ──> 视觉特征 ──> Projector ─┐
+                                                            ├─> Transformer ─> logits
+文本 ──> Token Embedding ──────────────────────────────────┘
+                                                               │
+targets ───────────────────────────────────> CrossEntropy <───┘
+                                                               │
+                                                AdamW + LR Scheduler
+```
+
+对于自回归训练，常见张量形状为 `logits: (B, T, V)`、`targets: (B, T)`；计算 token 级交叉熵时需先合并批次与序列维：
+
+```python
+loss = F.cross_entropy(logits.reshape(-1, vocab_size), targets.reshape(-1))
+```
+
+在分布式训练中，Mini-batch 被分配给多个设备并行处理（DDP）；各设备梯度聚合后再更新。实践上常组合 AdamW、学习率 warmup / 余弦衰减，以及混合精度与梯度裁剪。视觉—文本投影和序列拼接的结构细节见第五章。

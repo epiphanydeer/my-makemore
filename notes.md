@@ -830,10 +830,10 @@ $$
 $$
 \begin{aligned}
 E &= C[X] &&\in \mathbb{R}^{B\times K\times D},\\
-\tilde E &= \operatorname{reshape}(E) &&\in \mathbb{R}^{B\times(KD)},\\
+\tilde E &= \mathrm{reshape}(E) &&\in \mathbb{R}^{B\times(KD)},\\
 H &= \tanh(\tilde E W_1+b_1) &&\in \mathbb{R}^{B\times H},\\
 Z &= HW_2+b_2 &&\in \mathbb{R}^{B\times V},\\
-\mathcal L &= \operatorname{CrossEntropy}(Z,Y).&&
+\mathcal L &= \mathrm{CrossEntropy}(Z,Y).&&
 \end{aligned}
 $$
 
@@ -1044,7 +1044,7 @@ $$
 在输入和权重近似独立、均值接近 0 的简化假设下：
 
 $$
-\operatorname{Var}(y) \approx d_{in}\operatorname{Var}(x)\operatorname{Var}(w).
+\mathrm{Var}(y) \approx d_{in}\mathrm{Var}(x)\mathrm{Var}(w).
 $$
 
 希望输出的尺度不要比输入越来越大或越来越小，就需要让权重方差随输入维度缩小。常见选择如下：
@@ -1091,7 +1091,7 @@ LayerNorm（LN）换了一个方向：它不在 batch 维度上把不同样本�
 RMSNorm 更进一步，通常只用均方根做缩放：
 
 $$
-\operatorname{RMSNorm}(x)=\frac{x}{\sqrt{\frac{1}{d}\sum_{j=1}^{d}x_j^2+\epsilon}}\odot g.
+\mathrm{RMSNorm}(x)=\frac{x}{\sqrt{\frac{1}{d}\sum_{j=1}^{d}x_j^2+\epsilon}}\odot g.
 $$
 
 它省掉了“减均值”这一步，计算更简单，实践中在许多现代 Transformer 中表现稳定。一个好记法：**BN 看同批同学，LN / RMSNorm 看 token 自己的一组特征。**
@@ -1285,6 +1285,49 @@ $$
 \frac{\partial L}{\partial z_j}=p_j-\mathbb{1}[j=y].
 $$
 
+#### 白板手推：为什么 Softmax 与交叉熵会化简为 $p_i-y_i$？
+
+设一行 logits 为 $z=[z_1,\ldots,z_K]$，真实 one-hot 标签为 $y$。先定义：
+
+$$
+p_k=\frac{e^{z_k}}{S},
+\qquad
+S=\sum_{j=1}^{K}e^{z_j},
+\qquad
+L=-\sum_{k=1}^{K}y_k\log p_k.
+$$
+
+求某个 $z_i$ 的影响时，必须考虑它会改变**整行所有概率**，不只是 $p_i$。Softmax 的导数分两种情况：
+
+$$
+\frac{\partial p_i}{\partial z_i}
+=p_i(1-p_i),
+\qquad
+\frac{\partial p_k}{\partial z_i}
+=-p_kp_i\quad(k\ne i).
+$$
+
+第一项表示提高 $z_i$ 会提高自己的概率；第二项表示概率总和必须为 1，所以 $p_i$ 增大时其余类别概率会下降。交叉熵对概率的导数为：
+
+$$
+\frac{\partial L}{\partial p_k}=-\frac{y_k}{p_k}.
+$$
+
+把所有 $p_k$ 路径汇总到 $z_i$：
+
+$$
+\begin{aligned}
+\frac{\partial L}{\partial z_i}
+&=-\frac{y_i}{p_i}\,p_i(1-p_i)
++\sum_{k\ne i}\left(-\frac{y_k}{p_k}\right)(-p_kp_i)\\
+&=-y_i(1-p_i)+p_i\sum_{k\ne i}y_k\\
+&=-y_i+p_i\sum_{k=1}^{K}y_k\\
+&=p_i-y_i.
+\end{aligned}
+$$
+
+最后一步使用 one-hot 标签的性质 $\sum_k y_k=1$。这一推导的重点不是记住中间式，而是理解两个事实：Softmax 的类别彼此耦合；交叉熵恰好让复杂项抵消，留下“预测减标签”的简洁梯度。
+
 其中 $\mathbb{1}[j=y]$ 是 one-hot 标签：正确类为 1，其余为 0。若 loss 是 batch 平均，再除以 $B$：
 
 ```python
@@ -1318,6 +1361,40 @@ dW=X^T dY, \qquad dX=dY W^T.
 $$
 
 它们不是凭空出现的：`dW` 必须和 `W` 同形状，`dX` 必须和 `X` 同形状；把矩阵维度对齐，转置的位置就自然确定了。
+
+#### 白板推导：矩阵乘法梯度的维度对齐法
+
+对全连接层 $Y=XW$，设：
+
+$$
+X\in\mathbb{R}^{B\times d_{in}},
+\qquad
+W\in\mathbb{R}^{d_{in}\times d_{out}},
+\qquad
+Y\in\mathbb{R}^{B\times d_{out}}.
+$$
+
+上游梯度 `dY` 的形状必须和 $Y$ 相同，即 $B\times d_{out}$。接下来不是死记转置位置，而是同时遵守两条规则：**目标梯度的形状必须与原变量一致；矩阵乘法会收缩相邻的公共维度。**
+
+求 $dW$ 时，目标形状是 $d_{in}\times d_{out}$。手头的 $X$ 为 $B\times d_{in}$，`dY` 为 $B\times d_{out}$；只有把 $X$ 转置放在左边，才能消去中间的 $B$：
+
+$$
+dW=X^TdY,
+\qquad
+(d_{in}\times B)(B\times d_{out})
+=d_{in}\times d_{out}.
+$$
+
+求 $dX$ 时，目标形状是 $B\times d_{in}$。只有把 $W$ 转置放在右边，才能消去 $d_{out}$：
+
+$$
+dX=dYW^T,
+\qquad
+(B\times d_{out})(d_{out}\times d_{in})
+=B\times d_{in}.
+$$
+
+因此可把它记成一句白板口诀：**权重梯度 = 输入转置 × 下游梯度；输入梯度 = 下游梯度 × 权重转置。**若顺序写反，形状通常无法相乘；写每一步形状是最可靠的自检方式。
 
 对输出层 `logits = h @ W2 + b2`：
 
@@ -1380,7 +1457,7 @@ loss = F.cross_entropy(logits, Yb)
 
 #### 问题 1：Softmax 与交叉熵对 logits 的梯度是什么？为什么？
 
-**回答要点：** 对单样本，$\frac{\partial L}{\partial z_i}=p_i-y_i$；如果 loss 对 batch 取平均，还要除以 batch size $B$。其中 $p=\operatorname{softmax}(z)$，$y$ 是 one-hot 标签。
+**回答要点：** 对单样本，$\frac{\partial L}{\partial z_i}=p_i-y_i$；如果 loss 对 batch 取平均，还要除以 batch size $B$。其中 $p=\mathrm{softmax}(z)$，$y$ 是 one-hot 标签。
 
 白板推导可写成两步。首先，softmax 的雅可比矩阵为：
 

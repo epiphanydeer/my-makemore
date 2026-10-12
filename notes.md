@@ -145,9 +145,9 @@
 
 - **局部导数（Local Gradient）**：当前算子直接输出关于直接输入的偏导数。例如在乘法算子中：
 
-  $$
+$$
   \frac{\partial out}{\partial a} = b.data
-  $$
+$$
 
   （对应代码里的 `other.data`）。
 - **全局导数（Global Gradient）**：整个网络的最终标量损失 $L$ 关于当前节点输出的偏导数 $\frac{\partial L}{\partial out}$（对应代码中的 `out.grad`）。
@@ -171,9 +171,9 @@ self.grad = 1.0  # 最终标量对自身的偏导数恒等于 1.0 (dL/dL = 1)
 
 - **数学理论推导**：
 
-  $$
+$$
   \frac{dy}{dx} = 1 + 1 = 2
-  $$
+$$
 - **若采用赋值操作 `=`**，后一条反向路径的计算结果将直接覆盖前一条路径的计算结果，最终错误得出 $\frac{dy}{dx} = 1$；
 - **根据多元微积分链式法则**，自变量对因变量的总贡献必须是所有汇聚路径的偏导数代数累加和；
 - **PyTorch 映射考点**：这也解释了为何在 PyTorch 训练循环中，每次迭代前必须调用 `optimizer.zero_grad()`。PyTorch 底层张量计算同样遵循累加机制，若不清空，历史批次的梯度将残留在内存中污染当前轮次的参数更新。
@@ -1136,7 +1136,7 @@ $$
 以 PyTorch BatchNorm 为例，`momentum=0.1` 的更新近似为：
 
 $$
-\text{running} \leftarrow 0.9\cdot\text{running}+0.1\cdot\text{batch\_stat}.
+\mathrm{running} \leftarrow 0.9 \cdot \mathrm{running} + 0.1 \cdot \mathrm{batchStat}.
 $$
 
 这里的 `0.1` 是“本批统计量写进账本的比例”；而 SGD 的 `momentum=0.9` 通常表示“保留多少过去的更新方向”。两者的参数含义甚至方向相反，调参时不能望文生义地照搬。
@@ -1230,6 +1230,7 @@ $$
 \frac{\partial L}{\partial x}
 =
 \frac{\partial L}{\partial out}
+\cdot
 \frac{\partial out}{\partial x}.
 $$
 
@@ -1285,35 +1286,75 @@ $$
 \frac{\partial L}{\partial z_j}=p_j-\mathbb{1}[j=y].
 $$
 
-#### 白板手推：为什么 Softmax 与交叉熵会化简为 $p_i-y_i$？
+#### 白板手推（一）：为什么 Softmax 与交叉熵会化简为 $p_i-y_i$？
 
-设一行 logits 为 $z=[z_1,\ldots,z_K]$，真实 one-hot 标签为 $y$。先定义：
+这道题的目标不是硬背结论，而是从 `logits → 概率 → 损失` 两层复合函数走一遍链式法则。设单个样本有 $K$ 个类别：
 
 $$
-p_k=\frac{e^{z_k}}{S},
+z=[z_1,z_2,\ldots,z_K],
 \qquad
-S=\sum_{j=1}^{K}e^{z_j},
+p_k=\frac{e^{z_k}}{\sum_{j=1}^{K}e^{z_j}},
 \qquad
 L=-\sum_{k=1}^{K}y_k\log p_k.
 $$
 
-求某个 $z_i$ 的影响时，必须考虑它会改变**整行所有概率**，不只是 $p_i$。Softmax 的导数分两种情况：
+这里 $z$ 是未归一化的 logits，$p$ 是 softmax 后的概率，$y$ 是 one-hot 标签。为了让分式更清楚，记：
 
 $$
-\frac{\partial p_i}{\partial z_i}
-=p_i(1-p_i),
+S=\sum_{j=1}^{K}e^{z_j},
 \qquad
-\frac{\partial p_k}{\partial z_i}
-=-p_kp_i\quad(k\ne i).
+p_k=\frac{e^{z_k}}{S}.
 $$
 
-第一项表示提高 $z_i$ 会提高自己的概率；第二项表示概率总和必须为 1，所以 $p_i$ 增大时其余类别概率会下降。交叉熵对概率的导数为：
+白板上要对某个具体 logit $z_i$ 求导。关键难点是：改变 $z_i$ 不只会改变 $p_i$，还会通过公共分母 $S$ 改变所有 $p_k$；因此必须分两种情况。
+
+**情况 A：$k=i$。** 分子与分母都依赖 $z_i$，按商法则：
+
+$$
+\begin{aligned}
+\frac{\partial p_i}{\partial z_i}
+&=\frac{e^{z_i}S-e^{z_i}e^{z_i}}{S^2}\\
+&=\frac{e^{z_i}}{S}-\left(\frac{e^{z_i}}{S}\right)^2\\
+&=p_i(1-p_i).
+\end{aligned}
+$$
+
+提高自己的 logit 会提高自己的概率，所以这个导数为正。
+
+**情况 B：$k\ne i$。** $p_k$ 的分子不含 $z_i$，只有分母会变化：
+
+$$
+\begin{aligned}
+\frac{\partial p_k}{\partial z_i}
+&=\frac{0\cdot S-e^{z_k}e^{z_i}}{S^2}\\
+&=-\frac{e^{z_k}}{S}\frac{e^{z_i}}{S}\\
+&=-p_kp_i.
+\end{aligned}
+$$
+
+提高 $z_i$ 会挤压其他类别的概率，故导数为负。两种情况合在一起可记成：
+
+$$
+\frac{\partial p_k}{\partial z_i}
+=p_k\bigl(\mathbb{1}[k=i]-p_i\bigr).
+$$
+
+接着过交叉熵这一层。先得到它对每个概率的局部导数：
 
 $$
 \frac{\partial L}{\partial p_k}=-\frac{y_k}{p_k}.
 $$
 
-把所有 $p_k$ 路径汇总到 $z_i$：
+因为 $z_i$ 会影响全部 $p_k$，要把所有路径相加：
+
+$$
+\frac{\partial L}{\partial z_i}
+=\sum_{k=1}^{K}
+\frac{\partial L}{\partial p_k}
+\frac{\partial p_k}{\partial z_i}.
+$$
+
+将 $k=i$ 的一项与其余项分别代入：
 
 $$
 \begin{aligned}
@@ -1321,12 +1362,13 @@ $$
 &=-\frac{y_i}{p_i}\,p_i(1-p_i)
 +\sum_{k\ne i}\left(-\frac{y_k}{p_k}\right)(-p_kp_i)\\
 &=-y_i(1-p_i)+p_i\sum_{k\ne i}y_k\\
+&=-y_i+p_i\left(y_i+\sum_{k\ne i}y_k\right)\\
 &=-y_i+p_i\sum_{k=1}^{K}y_k\\
 &=p_i-y_i.
 \end{aligned}
 $$
 
-最后一步使用 one-hot 标签的性质 $\sum_k y_k=1$。这一推导的重点不是记住中间式，而是理解两个事实：Softmax 的类别彼此耦合；交叉熵恰好让复杂项抵消，留下“预测减标签”的简洁梯度。
+最后一步使用 one-hot 标签（更一般地说，任意概率标签分布）的性质 $\sum_{k=1}^{K}y_k=1$。因此最终梯度就是“预测概率减真实标签”：错类别的梯度为正，梯度下降会压低它的 logit；正确类别的梯度为 $p_i-1$，梯度下降会抬高它的 logit。
 
 其中 $\mathbb{1}[j=y]$ 是 one-hot 标签：正确类为 1，其余为 0。若 loss 是 batch 平均，再除以 $B$：
 
@@ -1362,39 +1404,62 @@ $$
 
 它们不是凭空出现的：`dW` 必须和 `W` 同形状，`dX` 必须和 `X` 同形状；把矩阵维度对齐，转置的位置就自然确定了。
 
-#### 白板推导：矩阵乘法梯度的维度对齐法
+#### 白板手推（二）：矩阵乘法梯度的维度对齐法
 
-对全连接层 $Y=XW$，设：
+这题的白板技巧是同时记住两件事：**梯度形状守恒**（对谁求导，梯度就与谁同形状）和**矩阵乘法会收缩相邻的公共维度**。不必先展开所有标量下标。
+
+设全连接层前向为：
 
 $$
-X\in\mathbb{R}^{B\times d_{in}},
+Y=XW.
+$$
+
+各张量的形状如下：
+
+| 张量 | 含义 | 形状 |
+| --- | --- | --- |
+| $X$ | $B$ 个输入样本 | `[B, d_in]` |
+| $W$ | 线性层权重 | `[d_in, d_out]` |
+| $Y$ | 线性层输出 | `[B, d_out]` |
+| $dY=\frac{\partial L}{\partial Y}$ | 上游梯度 | `[B, d_out]` |
+
+目标是得到：
+
+$$
+dW=\frac{\partial L}{\partial W}\in\mathbb{R}^{d_{\mathrm{in}}\times d_{\mathrm{out}}},
 \qquad
-W\in\mathbb{R}^{d_{in}\times d_{out}},
+dX=\frac{\partial L}{\partial X}\in\mathbb{R}^{B\times d_{\mathrm{in}}}.
+$$
+
+**求 $dW$。** 手里有 $X$，形状为 `[B, d_in]`，以及 $dY$，形状为 `[B, d_out]`。目标是 `[d_in, d_out]`，所以必须消去两者共有的 batch 维 $B$。唯一能完成这块“维度拼图”的组合是：
+
+$$
+\begin{aligned}
+dW&=X^\mathsf{T}dY,\\
+[d_{\mathrm{in}},B]\,[B,d_{\mathrm{out}}]
+&\longrightarrow[d_{\mathrm{in}},d_{\mathrm{out}}].
+\end{aligned}
+$$
+
+**求 $dX$。** 目标换成 `[B, d_in]`。此时 $dY$ 的最后一维是 $d_{\mathrm{out}}$，必须与 $W$ 的输出维相消，因此把 $W$ 转置放在右侧：
+
+$$
+\begin{aligned}
+dX&=dY\,W^\mathsf{T},\\
+[B,d_{\mathrm{out}}]\,[d_{\mathrm{out}},d_{\mathrm{in}}]
+&\longrightarrow[B,d_{\mathrm{in}}].
+\end{aligned}
+$$
+
+若线性层完整写作 $Y=XW+b$，偏置 $b$ 的形状为 `[d_out]`，前向时会广播到全部 $B$ 个样本。因此还要把这 $B$ 份贡献相加：
+
+$$
+db=\sum_{\text{batch dimension}}dY,
 \qquad
-Y\in\mathbb{R}^{B\times d_{out}}.
+db\text{ 的形状为 }[d_{\mathrm{out}}].
 $$
 
-上游梯度 `dY` 的形状必须和 $Y$ 相同，即 $B\times d_{out}$。接下来不是死记转置位置，而是同时遵守两条规则：**目标梯度的形状必须与原变量一致；矩阵乘法会收缩相邻的公共维度。**
-
-求 $dW$ 时，目标形状是 $d_{in}\times d_{out}$。手头的 $X$ 为 $B\times d_{in}$，`dY` 为 $B\times d_{out}$；只有把 $X$ 转置放在左边，才能消去中间的 $B$：
-
-$$
-dW=X^TdY,
-\qquad
-(d_{in}\times B)(B\times d_{out})
-=d_{in}\times d_{out}.
-$$
-
-求 $dX$ 时，目标形状是 $B\times d_{in}$。只有把 $W$ 转置放在右边，才能消去 $d_{out}$：
-
-$$
-dX=dYW^T,
-\qquad
-(B\times d_{out})(d_{out}\times d_{in})
-=B\times d_{in}.
-$$
-
-因此可把它记成一句白板口诀：**权重梯度 = 输入转置 × 下游梯度；输入梯度 = 下游梯度 × 权重转置。**若顺序写反，形状通常无法相乘；写每一步形状是最可靠的自检方式。
+白板口诀：**权重梯度 = 输入转置 × 下游梯度；输入梯度 = 下游梯度 × 权重转置；偏置梯度 = 下游梯度沿 batch 维求和。** 顺序写反时，形状通常立刻无法相乘；先在旁边写形状，是最快的自检方法。
 
 对输出层 `logits = h @ W2 + b2`：
 

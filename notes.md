@@ -263,7 +263,9 @@ W.data += -0.1 * W.grad
 
 Logits 是任意实数，softmax 才生成每行和为 1 的概率。对 batch 标签 `Yb:(B,)`，正确类别的概率可以用 `probs[torch.arange(B),Yb]` 逐行取出；平均负对数似然为：
 
-\$$ L = -\\frac{1}{B} \\sum\_{i=1}^{B} \\log p\_{i, Yb_i} $$
+$$
+L = -\frac{1}{B} \sum_{i=1}^{B} \log p_{i, Yb_i}
+$$
 
 实际训练用 `F.cross_entropy(logits,Yb)`，直接传 logits，由框架完成稳定的 log-softmax 与 NLL。采样用当前字符对应的概率行抽下一字符，直到抽到 `.`。
 
@@ -848,13 +850,13 @@ h = torch.tanh(hpreact)                        # 形状：(B, H)
 
    * 在减均值时：
 
-     $$
-     (X W_1 + b_1) - \text{mean}(X W_1 + b_1) = X W_1 + b_1 - (\text{mean}(X W_1) + b_1) = X W_1 - \text{mean}(X W_1)
-     $$
+$$
+(X W_1 + b_1) - \text{mean}(X W_1 + b_1) = X W_1 + b_1 - (\text{mean}(X W_1) + b_1) = X W_1 - \text{mean}(X W_1)
+$$
 
-     **常数偏置** $b_1$ **被完全减去抵消掉了！它的梯度永远是 0！**
+**常数偏置** $b_1$ **被完全减去抵消掉了！它的梯度永远是 0！**
 
-   * 偏置的平移功能完全由 BN 的可学习参数 `bnbias`（$\beta$）接管。所以在代码中直接写 `nn.Linear(..., bias=False)`，避免浪费显存与算力。
+偏置的平移功能完全由 BN 的可学习参数 `bnbias`（$\beta$）接管。所以在代码中直接写 `nn.Linear(..., bias=False)`，避免浪费显存与算力。
 
 ### 4.5 归一化演进：LayerNorm 与 RMSNorm 为什么更适合序列与 Transformer？
 
@@ -1014,17 +1016,17 @@ $$
 
 设输入未归一化分数为 $z = [z_1, z_2, \dots, z_V]$，真实标签为 one-hot 向量 $y = [y_1, y_2, \dots, y_V]$（只有真类位置 $y$ 为 1，其余全为 0）。
 
-* **Softmax 概率分布**：
+**Softmax 概率分布**：
 
-  $$
-  p_k = \frac{e^{z_k}}{\sum_{j=1}^V e^{z_j}}
-  $$
+$$
+p_k = \frac{e^{z_k}}{\sum_{j=1}^V e^{z_j}}
+$$
 
-* **交叉熵损失（单个样本）**：
+**交叉熵损失（单个样本）**：
 
-  $$
-  L = -\sum_{k=1}^V y_k \ln p_k
-  $$
+$$
+L = -\sum_{k=1}^V y_k \ln p_k
+$$
 
 目标：求损失 $L$ 对任意一个未归一化输入分数 $z_i$ 的偏导数 $\frac{\partial L}{\partial z_i}$。
 
@@ -1034,17 +1036,17 @@ $$
 
 根据商法则 $\left(\frac{u}{v}\right)' = \frac{u'v - uv'}{v^2}$，分母 $\sum_{j=1}^V e^{z_j}$ 对任意 $z_i$ 的导数都是 $e^{z_i}$。
 
-* **情况 A（当** $k = i$ **时，即本类分子包含** $z_i$**）**：
+**情况 A（当 $k = i$ 时，即本类分子包含 $z_i$）**：
 
-  $$
-  \frac{\partial p_i}{\partial z_i} = \frac{e^{z_i} \left(\sum_j e^{z_j}\right) - e^{z_i} \cdot e^{z_i}}{\left(\sum_j e^{z_j}\right)^2} = \frac{e^{z_i}}{\sum_j e^{z_j}} - \left(\frac{e^{z_i}}{\sum_j e^{z_j}}\right)^2 = p_i - p_i^2 = p_i(1 - p_i)
-  $$
+$$
+\frac{\partial p_i}{\partial z_i} = \frac{e^{z_i} \left(\sum_j e^{z_j}\right) - e^{z_i} \cdot e^{z_i}}{\left(\sum_j e^{z_j}\right)^2} = \frac{e^{z_i}}{\sum_j e^{z_j}} - \left(\frac{e^{z_i}}{\sum_j e^{z_j}}\right)^2 = p_i - p_i^2 = p_i(1 - p_i)
+$$
 
-* **情况 B（当** $k \ne i$ **时，即非本类分子不含** $z_i$**，分子导数为 0）**：
+**情况 B（当 $k \ne i$ 时，即非本类分子不含 $z_i$，分子导数为 0）**：
 
-  $$
-  \frac{\partial p_k}{\partial z_i} = \frac{0 \cdot \left(\sum_j e^{z_j}\right) - e^{z_k} \cdot e^{z_i}}{\left(\sum_j e^{z_j}\right)^2} = -\frac{e^{z_k}}{\sum_j e^{z_j}} \cdot \frac{e^{z_i}}{\sum_j e^{z_j}} = -p_k p_i
-  $$
+$$
+\frac{\partial p_k}{\partial z_i} = \frac{0 \cdot \left(\sum_j e^{z_j}\right) - e^{z_k} \cdot e^{z_i}}{\left(\sum_j e^{z_j}\right)^2} = -\frac{e^{z_k}}{\sum_j e^{z_j}} \cdot \frac{e^{z_i}}{\sum_j e^{z_j}} = -p_k p_i
+$$
 
 ##### 第 2 步：求交叉熵损失对概率的导数 $\frac{\partial L}{\partial p_k}$
 
@@ -1092,9 +1094,9 @@ $$
 
 2. 第二项 $\ln(u)$ 复合求导：外层导数是 $\frac{1}{u}$，内层和式对 $z_i$ 求导是 $e^{z_i}$：
 
-   $$
-   \frac{\partial}{\partial z_i} \ln\left(\sum_j e^{z_j}\right) = \frac{1}{\sum_j e^{z_j}} \cdot e^{z_i} = p_i
-   $$
+$$
+\frac{\partial}{\partial z_i} \ln\left(\sum_j e^{z_j}\right) = \frac{1}{\sum_j e^{z_j}} \cdot e^{z_i} = p_i
+$$
 
 两项相加，一步到位：
 
@@ -1182,9 +1184,9 @@ $$
 
    * 目标是生成 $(I, O)$ 且消掉公共轴 $B$，只有一种合法矩阵乘法摆法：
 
-     $$
-     (I, B) @ (B, O) \implies X^T @ dY
-     $$
+$$
+(I, B) @ (B, O) \implies X^T @ dY
+$$
 
 2. **推导** $dX$：
 
@@ -1194,9 +1196,9 @@ $$
 
    * 目标是生成 $(B, I)$ 且消掉公共轴 $O$，只有一种合法矩阵乘法摆法：
 
-     $$
-     (B, O) @ (O, I) \implies dY @ W^T
-     $$
+$$
+(B, O) @ (O, I) \implies dY @ W^T
+$$
 
 ### 5.4 BN 为什么是整张反向图中最绕的一段？
 
@@ -1221,11 +1223,11 @@ BN 输入 `u=hprebn:(B,H)`。均值 `mu:(1,H)` 由所有 B 个样本共同决定
 * **融合算子的数学救赎（Log-sum-exp 技巧）**：
   `F.cross_entropy` 在底层自动融合了减最大值操作：
 
-  $$
-  \ln\left(\sum_{j=1}^V e^{z_j}\right) = m + \ln\left(\sum_{j=1}^V e^{z_j - m}\right), \quad \text{其中 } m = \max_j(z_j)
-  $$
+$$
+\ln\left(\sum_{j=1}^V e^{z_j}\right) = m + \ln\left(\sum_{j=1}^V e^{z_j - m}\right), \quad \text{其中 } m = \max_j(z_j)
+$$
 
-  所有输入先减去本行最大值，使得指数项 $e^{z_j - m}$ 永远落在 $(0, 1]$ 之间，**从数学根本上彻底杜绝了上溢和下溢**。
+所有输入先减去本行最大值，使得指数项 $e^{z_j - m}$ 永远落在 $(0, 1]$ 之间，**从数学根本上彻底杜绝了上溢和下溢**。
 
 #### 5.6.2 原因二：显存带宽瓶颈（Memory-Bound 与访存往返）
 
